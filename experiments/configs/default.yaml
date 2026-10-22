@@ -1,0 +1,35 @@
+# Central experiment configuration (CP7.1).
+# Every run saves a resolved copy of this file next to its results.
+experiment:
+  name: default
+  seed: 42
+  results_dir: experiments/results
+
+data:
+  dataset: movielens-1m
+  raw_dir: data/ml-1m
+  processed_dir: data/processed
+  val_ratio: 0.1
+  test_ratio: 0.1
+
+model:
+  name: lightgcn          # lightgcn | bpr
+  embedding_dim: 64
+  num_layers: 3
+  learning_rate: 0.001
+  regularization: 0.0001
+  batch_size: 4096
+  epochs: 100
+  eval_every: 5
+  patience: 5             # evaluations without val improvement before stopping
+
+evaluation:
+  k: 10
+
+unlearning:
+  target_users: []
+  thresholds: {low: 0.33, high: 0.66}
+  strategies:
+    low: gradient_ascent
+    medium: localized_update
+    high: targeted_retraining
