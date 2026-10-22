@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local IDE settings
+.idea/
+
+# Local datasets
+data/ml-1m/
+data/ml-1m.zip
+
+data/processed/
+checkpoints/
