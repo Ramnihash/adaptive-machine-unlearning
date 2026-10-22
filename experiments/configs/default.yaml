@@ -3,7 +3,7 @@
 experiment:
   name: default
   seed: 42
-  stages: [train_theta0]   # train_theta0 | train_theta_star | train_bpr
+  stages: [train_theta0]   # train_theta0 | train_theta_star | train_bpr | train_shadow | evaluate
   results_dir: experiments/results
 
 data:
@@ -26,6 +26,18 @@ model:
 
 evaluation:
   k: 10
+  target_user: 39
+  mia_users: 2000         # users sampled to train/test the membership-inference attack
+  # Checkpoints to compare. Set path to a theta_0.pt / theta_star.pt / bpr.pt file.
+  # forgotten: true for models trained without the target user (θ*, θᵤ).
+  checkpoints:
+    theta_0:    {path: null, num_layers: 3}
+    theta_star: {path: null, num_layers: 3, forgotten: true}
+    bpr:        {path: null, num_layers: 0}
+    shadow:     {path: null, num_layers: 3}   # from the train_shadow stage
+  shadow:
+    fraction: 0.1         # share of users removed from the shadow model's training data
+    seed: 123
 
 unlearning:
   target_users: []
