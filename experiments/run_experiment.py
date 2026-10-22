@@ -2,7 +2,7 @@
 
     python -m experiments.run_experiment --config experiments/configs/default.yaml model.learning_rate=0.01
 
-Stages listed in experiment.stages run in order (train_theta0, train_theta_star). --dry-run only saves config and metadata.
+Stages listed in experiment.stages run in order (train_theta0, train_theta_star, train_bpr). --dry-run only saves config and metadata.
 """
 import argparse
 
@@ -37,6 +37,37 @@ def train_theta0(config, run):
     )
     torch.save(model.state_dict(), run.checkpoint_path("theta_0.pt"))
     return asdict(result)
+
+
+def train_bpr(config, run):
+    """BPR baseline: matrix factorisation trained with the BPR loss on the same split.
+
+    This is LightGCN with zero propagation layers (final embedding = raw embedding),
+    so BPR and LightGCN share the loss, sampler, evaluation and hyperparameters and
+    differ only in graph propagation.
+    """
+    from dataclasses import asdict
+    import torch
+    from models.train import get_split, train_lightgcn
+
+    model_cfg = config["model"]
+    seed = config["experiment"]["seed"]
+    split = get_split(seed)
+    model, result = train_lightgcn(
+        split,
+        epochs=model_cfg["epochs"],
+        embedding_dim=model_cfg["embedding_dim"],
+        num_layers=0,
+        learning_rate=model_cfg["learning_rate"],
+        batch_size=model_cfg["batch_size"],
+        regularization=model_cfg["regularization"],
+        seed=seed,
+        eval_every=model_cfg["eval_every"],
+        patience=model_cfg["patience"],
+        k=config["evaluation"]["k"],
+    )
+    torch.save(model.state_dict(), run.checkpoint_path("bpr.pt"))
+    return {"model": "bpr (LightGCN with num_layers=0)", **asdict(result)}
 
 
 def train_theta_star(config, run):
@@ -101,6 +132,7 @@ def train_theta_star(config, run):
 STAGE_REGISTRY = {
     "train_theta0": train_theta0,
     "train_theta_star": train_theta_star,
+    "train_bpr": train_bpr,
 }
 
 
