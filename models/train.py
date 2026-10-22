@@ -1,146 +1,148 @@
+"""Train LightGCN on the training split and evaluate on held-out data (CP2.2-CP2.4)."""
+
+import copy
+import json
+import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import torch
 from torch import nn
 from torch.optim import Adam
-from typing import cast
+
+from data.split import DataSplit, load_split, save_split, split_interactions, SPLIT_DIR
 from data.preprocessing import preprocess_movielens
-from graph.graph_builder import build_interaction_graph
-from models.lightgcn import create_lightgcn
+from graph.graph_builder import build_graph_from_ratings
+from models.evaluate import evaluate
+from models.lightgcn import LightGCN
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODEL_DIR = PROJECT_ROOT / "checkpoints"
 
 
+@dataclass
+class TrainingResult:
+    """Losses, validation history and final held-out metrics of one training run."""
+
+    losses: list[float] = field(default_factory=list)
+    val_history: list[dict] = field(default_factory=list)
+    best_epoch: int = 0
+    best_val: dict = field(default_factory=dict)
+    test: dict = field(default_factory=dict)
+    train_seconds: float = 0.0
+
+
+def get_split(seed: int = 42) -> DataSplit:
+    """Load the saved split, or create and save it if it does not exist yet."""
+    if (SPLIT_DIR / "split_summary.json").is_file():
+        split = load_split()
+        if split.seed == seed:
+            return split
+
+    split = split_interactions(preprocess_movielens(), seed=seed)
+    save_split(split)
+    return split
+
+
+def build_adjacency(model: LightGCN, split: DataSplit, device: torch.device) -> torch.Tensor:
+    """Normalised adjacency built from training interactions only."""
+    graph = build_graph_from_ratings(split.train, split.num_users, split.num_movies)
+    return model.normalize_graph(graph.edge_index.to(device))
+
+
 def train_lightgcn(
-    epochs: int = 10,
+    split: DataSplit | None = None,
+    epochs: int = 100,
     embedding_dim: int = 64,
     num_layers: int = 3,
     learning_rate: float = 0.001,
     batch_size: int = 4096,
     regularization: float = 1e-4,
     seed: int = 42,
-) -> tuple[nn.Module, list[float]]:
-    if epochs <= 0 or batch_size <= 0:
-        raise ValueError("Epochs and batch size must be positive.")
+    eval_every: int = 5,
+    patience: int = 5,
+    k: int = 10,
+) -> tuple[LightGCN, TrainingResult]:
+    """Train with BPR loss on split.train, keep the best epoch by validation NDCG@k.
+
+    patience counts evaluations (not epochs) without improvement before stopping.
+    """
+    if epochs <= 0 or batch_size <= 0 or eval_every <= 0:
+        raise ValueError("Epochs, batch size and eval_every must be positive.")
 
     torch.manual_seed(seed)
 
-    data = preprocess_movielens()
-    graph = build_interaction_graph(data)
+    if split is None:
+        split = get_split(seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    num_users = split.num_users
+    num_movies = split.num_movies
 
-    model = create_lightgcn(
-        graph,
+    model = LightGCN(
+        num_users=num_users,
+        num_movies=num_movies,
         embedding_dim=embedding_dim,
         num_layers=num_layers,
     ).to(device)
 
-    edge_index = graph.edge_index.to(device)
-    adjacency = model.normalize_graph(edge_index)
+    adjacency = build_adjacency(model, split, device)
 
-    ratings = data.ratings
-    user_indices = torch.tensor(
-        ratings["user_idx"].to_numpy(),
-        dtype=torch.long,
-        device=device,
-    )
-    movie_indices = torch.tensor(
-        ratings["movie_idx"].to_numpy(),
-        dtype=torch.long,
-        device=device,
-    )
+    train = split.train
+    user_indices = torch.tensor(train["user_idx"].to_numpy(), dtype=torch.long, device=device)
+    movie_indices = torch.tensor(train["movie_idx"].to_numpy(), dtype=torch.long, device=device)
 
-    positive_items: dict[int, set[int]] = {}
-
-    for user, group in ratings.groupby("user_idx"):
-        user_id = cast(int, user)
-        positive_items[user_id] = set(group["movie_idx"].astype(int))
+    # Every training (user, movie) pair as one integer key, for fast negative checks.
+    positive_keys = torch.sort(user_indices * num_movies + movie_indices).values
 
     optimizer = Adam(model.parameters(), lr=learning_rate)
-    losses = []
-    num_interactions = len(ratings)
-    num_users = graph.num_users
-    num_movies = graph.num_movies
+    result = TrainingResult()
+    best_state = copy.deepcopy(model.state_dict())
+    best_score = -1.0
+    evaluations_without_improvement = 0
+    num_interactions = len(train)
+    start_time = time.perf_counter()
 
-    for epoch in range(epochs):
+    for epoch in range(1, epochs + 1):
         model.train()
 
         permutation = torch.randperm(num_interactions, device=device)
         epoch_loss = 0.0
-        processed = 0
 
         for start in range(0, num_interactions, batch_size):
             batch = permutation[start:start + batch_size]
 
             users = user_indices[batch]
             positive = movie_indices[batch]
+            negative = torch.randint(num_movies, (len(batch),), device=device)
 
-            negative_values = torch.randint(
-                num_movies,
-                (len(batch),),
-                device=device,
-            )
-
-            for attempt in range(10):
-                invalid = torch.tensor(
-                    [
-                        int(item) in positive_items[int(user)]
-                        for user, item in zip(
-                            users.cpu().tolist(),
-                            negative_values.cpu().tolist(),
-                        )
-                    ],
-                    dtype=torch.bool,
-                    device=device,
-                )
-
+            # Resample negatives that are actually training positives.
+            for _ in range(10):
+                invalid = torch.isin(users * num_movies + negative, positive_keys)
                 if not invalid.any():
                     break
-
-                replacements = torch.randint(
-                    num_movies,
-                    (int(invalid.sum().item()),),
-                    device=device,
+                negative[invalid] = torch.randint(
+                    num_movies, (int(invalid.sum().item()),), device=device
                 )
-                negative_values[invalid] = replacements
 
             model_embeddings = model.propagate(adjacency)
 
             user_embeddings = model_embeddings[users]
-            positive_embeddings = model_embeddings[
-                positive + num_users
-            ]
-            negative_embeddings = model_embeddings[
-                negative_values + num_users
-            ]
+            positive_embeddings = model_embeddings[positive + num_users]
+            negative_embeddings = model_embeddings[negative + num_users]
 
-            positive_scores = (
-                user_embeddings * positive_embeddings
-            ).sum(dim=1)
-
-            negative_scores = (
-                user_embeddings * negative_embeddings
-            ).sum(dim=1)
+            positive_scores = (user_embeddings * positive_embeddings).sum(dim=1)
+            negative_scores = (user_embeddings * negative_embeddings).sum(dim=1)
 
             ranking_loss = -torch.nn.functional.logsigmoid(
                 positive_scores - negative_scores
             ).mean()
 
-            raw_user_embeddings = model.embedding(users)
-            raw_positive_embeddings = model.embedding(
-                positive + num_users
-            )
-            raw_negative_embeddings = model.embedding(
-                negative_values + num_users
-            )
-
             reg_loss = (
-                raw_user_embeddings.square().sum(dim=1)
-                + raw_positive_embeddings.square().sum(dim=1)
-                + raw_negative_embeddings.square().sum(dim=1)
+                model.embedding(users).square().sum(dim=1)
+                + model.embedding(positive + num_users).square().sum(dim=1)
+                + model.embedding(negative + num_users).square().sum(dim=1)
             ).mean()
 
             loss = ranking_loss + regularization * reg_loss
@@ -150,17 +152,41 @@ def train_lightgcn(
             optimizer.step()
 
             epoch_loss += loss.item() * len(batch)
-            processed += len(batch)
 
-        average_loss = epoch_loss / processed
-        losses.append(average_loss)
+        average_loss = epoch_loss / num_interactions
+        result.losses.append(average_loss)
+        message = f"Epoch {epoch}/{epochs} - Loss: {average_loss:.6f}"
 
-        print(
-            f"Epoch {epoch + 1}/{epochs} - "
-            f"Loss: {average_loss:.6f}"
-        )
+        if epoch % eval_every == 0 or epoch == epochs:
+            val = evaluate(model, adjacency, split.val, exclude=[split.train], k=k)
+            result.val_history.append({"epoch": epoch, **val})
+            message += f" - Val Recall@{k}: {val[f'recall@{k}']:.4f} NDCG@{k}: {val[f'ndcg@{k}']:.4f}"
 
-    return model, losses
+            if val[f"ndcg@{k}"] > best_score:
+                best_score = val[f"ndcg@{k}"]
+                best_state = copy.deepcopy(model.state_dict())
+                result.best_epoch = epoch
+                result.best_val = val
+                evaluations_without_improvement = 0
+            else:
+                evaluations_without_improvement += 1
+
+        print(message, flush=True)
+
+        if evaluations_without_improvement >= patience:
+            print(f"Early stopping: no validation improvement in {patience} evaluations.")
+            break
+
+    result.train_seconds = time.perf_counter() - start_time
+
+    model.load_state_dict(best_state)
+    result.test = evaluate(model, adjacency, split.test, exclude=[split.train, split.val], k=k)
+    print(
+        f"Best epoch {result.best_epoch} - Test Recall@{k}: {result.test[f'recall@{k}']:.4f} "
+        f"NDCG@{k}: {result.test[f'ndcg@{k}']:.4f}"
+    )
+
+    return model, result
 
 
 def save_model(model: nn.Module, filename: str = "lightgcn.pt") -> Path:
@@ -170,7 +196,26 @@ def save_model(model: nn.Module, filename: str = "lightgcn.pt") -> Path:
     return path
 
 
+def save_result(result: TrainingResult, filename: str) -> Path:
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    path = MODEL_DIR / filename
+    with open(path, "w") as file:
+        json.dump(asdict(result), file, indent=2)
+    return path
+
+
 if __name__ == "__main__":
-    trained_model, training_losses = train_lightgcn()
-    saved_path = save_model(trained_model)
-    print(f"Model saved to: {saved_path}")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train LightGCN θ₀ on the training split.")
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--eval-every", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--name", default="theta_0")
+    args = parser.parse_args()
+
+    trained_model, training_result = train_lightgcn(
+        epochs=args.epochs, eval_every=args.eval_every, seed=args.seed
+    )
+    print(f"Model saved to: {save_model(trained_model, f'{args.name}.pt')}")
+    print(f"Metrics saved to: {save_result(training_result, f'{args.name}_metrics.json')}")
