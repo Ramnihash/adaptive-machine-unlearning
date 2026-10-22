@@ -121,7 +121,10 @@ class RunManager:
     def checkpoint_path(self, name):
         """Path for a model file (e.g. 'theta_0.pt'); it is recorded in metadata."""
         path = self.run_dir / "checkpoints" / name
-        self.metadata["checkpoints"][name] = str(path.relative_to(REPO_ROOT))
+        try:
+            self.metadata["checkpoints"][name] = str(path.relative_to(REPO_ROOT))
+        except ValueError:  # results dir outside the repo
+            self.metadata["checkpoints"][name] = str(path)
         self._write_metadata()
         return path
 

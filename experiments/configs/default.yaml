@@ -3,6 +3,7 @@
 experiment:
   name: default
   seed: 42
+  stages: [train_theta0]   # train_theta0 | train_theta_star
   results_dir: experiments/results
 
 data:

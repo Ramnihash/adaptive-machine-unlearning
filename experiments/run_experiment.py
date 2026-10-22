@@ -2,8 +2,7 @@
 
     python -m experiments.run_experiment --config experiments/configs/default.yaml model.learning_rate=0.01
 
-Stages in STAGES run in order (currently: train θ₀). Later stages add
-unlearning θᵤ, θ* and evaluation. --dry-run only saves config and metadata.
+Stages listed in experiment.stages run in order (train_theta0, train_theta_star). --dry-run only saves config and metadata.
 """
 import argparse
 
@@ -40,9 +39,69 @@ def train_theta0(config, run):
     return asdict(result)
 
 
-# Each stage is a function (config, run) -> dict of results, run in order.
+def train_theta_star(config, run):
+    """Gold standard θ*: retrain from scratch after removing each target user's training data."""
+    import time
+    import torch
+    from data.split import remove_user_from_split
+    from models.evaluate import evaluate
+    from models.train import build_adjacency, get_split, train_lightgcn
+
+    model_cfg = config["model"]
+    targets = config["unlearning"]["target_users"]
+    if not targets:
+        raise ValueError("Set unlearning.target_users, e.g. 'unlearning.target_users=[39]'.")
+    if len(targets) != 1:
+        raise ValueError("One target user per θ* run for now.")
+    target = int(targets[0])
+    k = config["evaluation"]["k"]
+    seed = config["experiment"]["seed"]
+
+    split = get_split(seed)
+    forgotten = int((split.train["user_idx"] == target).sum())
+    split_star = remove_user_from_split(split, target)
+
+    model, result = train_lightgcn(
+        split_star,
+        epochs=model_cfg["epochs"],
+        embedding_dim=model_cfg["embedding_dim"],
+        num_layers=model_cfg["num_layers"],
+        learning_rate=model_cfg["learning_rate"],
+        batch_size=model_cfg["batch_size"],
+        regularization=model_cfg["regularization"],
+        seed=seed,
+        eval_every=model_cfg["eval_every"],
+        patience=model_cfg["patience"],
+        k=k,
+        select_best=False,
+    )
+
+    device = next(model.parameters()).device
+    adjacency = build_adjacency(model, split_star, device)
+    exclude = [split_star.train, split_star.val]
+    others = evaluate(model, adjacency, split.test, exclude, k=k, skip_users=(target,))
+    forgotten_user = evaluate(model, adjacency, split.test, exclude, k=k, only_users=(target,))
+
+    torch.save(model.state_dict(), run.checkpoint_path("theta_star.pt"))
+    return {
+        "target_user": target,
+        "forgotten_train_interactions": forgotten,
+        "train_interactions_remaining": len(split_star.train),
+        "retrain_seconds": result.train_seconds,
+        "test_all_users": result.test,
+        "test_other_users": others,
+        "test_target_user": forgotten_user,
+        "val_history": result.val_history,
+        "losses": result.losses,
+    }
+
+
+# Registry of pipeline stages; experiment.stages in the config picks which run, in order.
 # Hemanth's unlearning and Rahul's evaluation stages are added here during integration.
-STAGES = [train_theta0]
+STAGE_REGISTRY = {
+    "train_theta0": train_theta0,
+    "train_theta_star": train_theta_star,
+}
 
 
 def main(argv=None):
@@ -56,8 +115,10 @@ def main(argv=None):
     config = load_config(args.config, args.overrides)
     with RunManager(config, results_dir=args.results_dir) as run:
         results = {"stages": {}}
-        for stage in [] if args.dry_run else STAGES:
-            results["stages"][stage.__name__] = stage(config, run)
+        for name in [] if args.dry_run else config["experiment"]["stages"]:
+            if name not in STAGE_REGISTRY:
+                raise ValueError(f"Unknown stage {name!r}. Available: {sorted(STAGE_REGISTRY)}")
+            results["stages"][name] = STAGE_REGISTRY[name](config, run)
         if args.dry_run:
             results["note"] = "dry run: pipeline stages skipped"
         run.save_results(results)

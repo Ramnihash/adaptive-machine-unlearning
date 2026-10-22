@@ -92,13 +92,21 @@ def evaluate(
     target: pd.DataFrame,
     exclude: list[pd.DataFrame],
     k: int = 10,
+    skip_users: tuple[int, ...] = (),
+    only_users: tuple[int, ...] | None = None,
 ) -> dict[str, float]:
     """Evaluate on held-out interactions in `target`, masking items in `exclude`.
+
+    skip_users drops users from the average (e.g. the forgotten user);
+    only_users restricts it to those users.
 
     Validation: target=val, exclude=[train].
     Test: target=test, exclude=[train, val].
     """
     relevant = group_items(target)
+    if only_users is not None:
+        relevant = {u: v for u, v in relevant.items() if u in set(only_users)}
+    relevant = {u: v for u, v in relevant.items() if u not in set(skip_users)}
     user_indices = np.array(sorted(relevant), dtype=np.int64)
     recommendations = recommend_top_k(model, adjacency, user_indices, exclude, k=k)
     return ranking_metrics(recommendations, user_indices, relevant, k=k)

@@ -63,10 +63,13 @@ def train_lightgcn(
     eval_every: int = 5,
     patience: int = 5,
     k: int = 10,
+    select_best: bool = True,
 ) -> tuple[LightGCN, TrainingResult]:
     """Train with BPR loss on split.train, keep the best epoch by validation NDCG@k.
 
     patience counts evaluations (not epochs) without improvement before stopping.
+    select_best=False trains for the full epoch budget and keeps the final weights
+    (no early stopping), which is what θ* needs to match a fully trained θ₀.
     """
     if epochs <= 0 or batch_size <= 0 or eval_every <= 0:
         raise ValueError("Epochs, batch size and eval_every must be positive.")
@@ -173,13 +176,16 @@ def train_lightgcn(
 
         print(message, flush=True)
 
-        if evaluations_without_improvement >= patience:
+        if select_best and evaluations_without_improvement >= patience:
             print(f"Early stopping: no validation improvement in {patience} evaluations.")
             break
 
     result.train_seconds = time.perf_counter() - start_time
 
-    model.load_state_dict(best_state)
+    if select_best:
+        model.load_state_dict(best_state)
+    else:
+        result.best_epoch = epochs
     result.test = evaluate(model, adjacency, split.test, exclude=[split.train, split.val], k=k)
     print(
         f"Best epoch {result.best_epoch} - Test Recall@{k}: {result.test[f'recall@{k}']:.4f} "
