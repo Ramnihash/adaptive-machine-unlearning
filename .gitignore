@@ -226,3 +226,4 @@ data/ml-1m.zip
 
 data/processed/
 checkpoints/
+experiments/results/

@@ -84,6 +84,30 @@ def split_interactions(
     )
 
 
+def remove_user_from_split(split: DataSplit, user_idx: int) -> DataSplit:
+    """Return a copy of the split without the target user's training interactions.
+
+    This is D_total - D_forget for the gold-standard retrain θ*. Validation and
+    test interactions are left untouched so metrics stay comparable with θ₀.
+    """
+    if not 0 <= user_idx < split.num_users:
+        raise ValueError(f"user_idx {user_idx} is outside 0..{split.num_users - 1}.")
+
+    kept = split.train[split.train["user_idx"] != user_idx].reset_index(drop=True)
+
+    if len(kept) == len(split.train):
+        raise ValueError(f"User {user_idx} has no training interactions to remove.")
+
+    return DataSplit(
+        train=kept,
+        val=split.val,
+        test=split.test,
+        num_users=split.num_users,
+        num_movies=split.num_movies,
+        seed=split.seed,
+    )
+
+
 def split_fingerprint(split: DataSplit) -> str:
     """Return a hash that is identical whenever the split is identical."""
     digest = hashlib.sha256()
