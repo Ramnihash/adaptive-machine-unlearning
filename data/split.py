@@ -108,6 +108,23 @@ def remove_user_from_split(split: DataSplit, user_idx: int) -> DataSplit:
     )
 
 
+def remove_users_from_split(split: DataSplit, user_indices) -> DataSplit:
+    """Like remove_user_from_split, for several users at once (shadow models)."""
+    users = {int(u) for u in user_indices}
+    if not users or min(users) < 0 or max(users) >= split.num_users:
+        raise ValueError("user_indices must be non-empty and inside 0..num_users-1.")
+
+    kept = split.train[~split.train["user_idx"].isin(users)].reset_index(drop=True)
+    return DataSplit(
+        train=kept,
+        val=split.val,
+        test=split.test,
+        num_users=split.num_users,
+        num_movies=split.num_movies,
+        seed=split.seed,
+    )
+
+
 def split_fingerprint(split: DataSplit) -> str:
     """Return a hash that is identical whenever the split is identical."""
     digest = hashlib.sha256()

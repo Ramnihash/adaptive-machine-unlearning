@@ -2,7 +2,7 @@
 
     python -m experiments.run_experiment --config experiments/configs/default.yaml model.learning_rate=0.01
 
-Stages listed in experiment.stages run in order (train_theta0, train_theta_star, train_bpr). --dry-run only saves config and metadata.
+Stages listed in experiment.stages run in order (train_theta0, train_theta_star, train_bpr, train_shadow, evaluate). --dry-run only saves config and metadata.
 """
 import argparse
 
@@ -70,6 +70,99 @@ def train_bpr(config, run):
     return {"model": "bpr (LightGCN with num_layers=0)", **asdict(result)}
 
 
+def _forgotten_users(name, entry, target):
+    """Users a checkpoint was trained without: the target for θ*/θᵤ, the removed set for the shadow."""
+    if name == "shadow":
+        return _shadow_removed_users(entry["path"])
+    return [target] if entry.get("forgotten", False) else None
+
+
+def _shadow_removed_users(checkpoint):
+    import json
+    from pathlib import Path
+    results = json.loads((Path(checkpoint).parent.parent / "results.json").read_text())
+    return results["stages"]["train_shadow"]["removed_users"]
+
+
+def train_shadow(config, run):
+    """Shadow model for the user-level membership attack: θ₀'s recipe on D_total minus random users."""
+    import numpy as np
+    import torch
+    from data.split import remove_users_from_split
+    from models.train import get_split, train_lightgcn
+
+    model_cfg = config["model"]
+    shadow_cfg = config["evaluation"]["shadow"]
+    seed = config["experiment"]["seed"]
+    target = int(config["evaluation"]["target_user"])
+
+    split = get_split(seed)
+    rng = np.random.default_rng(shadow_cfg["seed"])
+    candidates = np.setdiff1d(np.arange(split.num_users), [target])
+    removed = np.sort(rng.choice(candidates, size=int(shadow_cfg["fraction"] * split.num_users), replace=False))
+
+    model, result = train_lightgcn(
+        remove_users_from_split(split, removed),
+        epochs=model_cfg["epochs"],
+        embedding_dim=model_cfg["embedding_dim"],
+        num_layers=model_cfg["num_layers"],
+        learning_rate=model_cfg["learning_rate"],
+        batch_size=model_cfg["batch_size"],
+        regularization=model_cfg["regularization"],
+        seed=seed + 1,
+        eval_every=model_cfg["eval_every"],
+        patience=model_cfg["patience"],
+        k=config["evaluation"]["k"],
+        select_best=False,
+    )
+    torch.save(model.state_dict(), run.checkpoint_path("shadow.pt"))
+    return {"removed_users": [int(u) for u in removed], "train_seconds": result.train_seconds,
+            "test": result.test, "val_history": result.val_history, "losses": result.losses}
+
+
+def evaluate_models_stage(config, run):
+    """Evaluate saved models under identical conditions and save the comparison."""
+    from evaluation.harness import evaluate_models, read_run_info
+    from evaluation.model_io import load_bundle
+    from models.train import get_split
+
+    eval_cfg = config["evaluation"]
+    target = int(eval_cfg["target_user"])
+    split = get_split(config["experiment"]["seed"])
+
+    bundles, run_ids = {}, {}
+    for name, entry in eval_cfg["checkpoints"].items():
+        if not entry.get("path"):
+            continue
+        run_id, seconds = read_run_info(entry["path"])
+        run_ids[name] = run_id
+        bundles[name] = load_bundle(
+            name,
+            entry["path"],
+            split,
+            forgotten_users=_forgotten_users(name, entry, target),
+            num_layers=entry["num_layers"],
+            runtime_seconds=seconds,
+        )
+    for needed in ("theta_0", "theta_star"):
+        if needed not in bundles:
+            raise ValueError(f"evaluation.checkpoints.{needed}.path must be set.")
+
+    shadow, removed = bundles.pop("shadow", None), None
+    if shadow is not None:
+        removed = _shadow_removed_users(eval_cfg["checkpoints"]["shadow"]["path"])
+
+    results = evaluate_models(
+        bundles, split, target, k=eval_cfg["k"], mia_users=eval_cfg["mia_users"],
+        seed=config["experiment"]["seed"], shadow=shadow, shadow_removed_users=removed,
+    )
+    for name, run_id in run_ids.items():
+        if name in results["models"]:
+            results["models"][name]["run_id"] = run_id
+    results["shadow_run_id"] = run_ids.get("shadow")
+    return results
+
+
 def train_theta_star(config, run):
     """Gold standard θ*: retrain from scratch after removing each target user's training data."""
     import time
@@ -133,6 +226,8 @@ STAGE_REGISTRY = {
     "train_theta0": train_theta0,
     "train_theta_star": train_theta_star,
     "train_bpr": train_bpr,
+    "train_shadow": train_shadow,
+    "evaluate": evaluate_models_stage,
 }
 
 
