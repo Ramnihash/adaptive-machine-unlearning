@@ -33,15 +33,78 @@ class TrainingResult:
     train_seconds: float = 0.0
 
 
-def get_split(seed: int = 42) -> DataSplit:
-    """Load the saved split, or create and save it if it does not exist yet."""
-    if (SPLIT_DIR / "split_summary.json").is_file():
-        split = load_split()
-        if split.seed == seed:
-            return split
+def get_split(
+    seed: int = 42,
+    processed_dir: Path | str | None = None,
+    dataset: str = "movielens-1m",
+    raw_dir: Path | str | None = None,
+    val_ratio: float = 0.1,
+    test_ratio: float = 0.1,
+) -> DataSplit:
+    """Load the saved split, or create and save it if it does not exist yet.
 
-    split = split_interactions(preprocess_movielens(), seed=seed)
-    save_split(split)
+    A cached split is only reused if its seed, dataset identity, and split
+    ratios match the requested configuration. If the cached split cannot be
+    validated, it is rebuilt from the raw dataset.
+    """
+    dir_path = Path(processed_dir) if processed_dir else SPLIT_DIR
+    summary_path = dir_path / "split_summary.json"
+
+    if summary_path.is_file():
+        try:
+            with open(summary_path) as file:
+                summary = json.load(file)
+        except Exception:
+            summary = {}
+
+        cached_seed = summary.get("seed")
+        cached_dataset = summary.get("dataset")
+        cached_val_ratio = summary.get("val_ratio")
+        cached_test_ratio = summary.get("test_ratio")
+
+        seed_matches = (cached_seed == seed)
+        ratio_matches = (
+            (cached_val_ratio is None or abs(cached_val_ratio - val_ratio) < 1e-6)
+            and (cached_test_ratio is None or abs(cached_test_ratio - test_ratio) < 1e-6)
+        )
+
+        dataset_valid = False
+        if cached_dataset is not None:
+            dataset_valid = (cached_dataset == dataset)
+        else:
+            # Legacy summary without explicit dataset identity: validate against raw data if available
+            raw_path = Path(raw_dir) if raw_dir else (PROJECT_ROOT / "data" / "ml-1m")
+            ratings_file = raw_path / "ratings.dat"
+            if dataset == "movielens-1m" and ratings_file.is_file():
+                total_cached = summary.get("train", 0) + summary.get("val", 0) + summary.get("test", 0)
+                try:
+                    with open(ratings_file, "rb") as f:
+                        line_count = sum(1 for _ in f)
+                    if line_count == total_cached and line_count > 0:
+                        dataset_valid = True
+                except Exception:
+                    dataset_valid = False
+
+        if seed_matches and ratio_matches and dataset_valid:
+            return load_split(dir_path)
+
+    raw_path = Path(raw_dir) if raw_dir else (PROJECT_ROOT / "data" / "ml-1m")
+    if dataset == "movielens-1m":
+        processed = preprocess_movielens(data_dir=raw_path)
+    else:
+        raise ValueError(
+            f"Unsupported dataset for automatic build: {dataset!r}. "
+            "Only 'movielens-1m' can be automatically loaded from raw data."
+        )
+
+    split = split_interactions(
+        processed,
+        val_ratio=val_ratio,
+        test_ratio=test_ratio,
+        seed=seed,
+        dataset=dataset,
+    )
+    save_split(split, dir_path, dataset=dataset, val_ratio=val_ratio, test_ratio=test_ratio)
     return split
 
 

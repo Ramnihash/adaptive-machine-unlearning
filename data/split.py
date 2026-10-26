@@ -25,6 +25,7 @@ class DataSplit:
     num_users: int
     num_movies: int
     seed: int
+    dataset: str = "movielens-1m"
 
 
 def split_interactions(
@@ -32,6 +33,7 @@ def split_interactions(
     val_ratio: float = 0.1,
     test_ratio: float = 0.1,
     seed: int = 42,
+    dataset: str = "movielens-1m",
 ) -> DataSplit:
     """Split each user's interactions randomly into train/val/test.
 
@@ -81,6 +83,7 @@ def split_interactions(
         num_users=data.num_users,
         num_movies=data.num_movies,
         seed=seed,
+        dataset=dataset,
     )
 
 
@@ -105,6 +108,7 @@ def remove_user_from_split(split: DataSplit, user_idx: int) -> DataSplit:
         num_users=split.num_users,
         num_movies=split.num_movies,
         seed=split.seed,
+        dataset=getattr(split, "dataset", "movielens-1m"),
     )
 
 
@@ -122,6 +126,7 @@ def remove_users_from_split(split: DataSplit, user_indices) -> DataSplit:
         num_users=split.num_users,
         num_movies=split.num_movies,
         seed=split.seed,
+        dataset=getattr(split, "dataset", "movielens-1m"),
     )
 
 
@@ -136,7 +141,13 @@ def split_fingerprint(split: DataSplit) -> str:
     return digest.hexdigest()[:16]
 
 
-def save_split(split: DataSplit, output_dir: Path = SPLIT_DIR) -> Path:
+def save_split(
+    split: DataSplit,
+    output_dir: Path = SPLIT_DIR,
+    dataset: str | None = None,
+    val_ratio: float | None = None,
+    test_ratio: float | None = None,
+) -> Path:
     """Save the split as CSV files plus a JSON summary."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -144,7 +155,9 @@ def save_split(split: DataSplit, output_dir: Path = SPLIT_DIR) -> Path:
     split.val.to_csv(output_dir / "val.csv", index=False)
     split.test.to_csv(output_dir / "test.csv", index=False)
 
+    ds_name = dataset or getattr(split, "dataset", "movielens-1m")
     summary = {
+        "dataset": ds_name,
         "seed": split.seed,
         "num_users": split.num_users,
         "num_movies": split.num_movies,
@@ -153,6 +166,10 @@ def save_split(split: DataSplit, output_dir: Path = SPLIT_DIR) -> Path:
         "test": len(split.test),
         "fingerprint": split_fingerprint(split),
     }
+    if val_ratio is not None:
+        summary["val_ratio"] = val_ratio
+    if test_ratio is not None:
+        summary["test_ratio"] = test_ratio
 
     with open(output_dir / "split_summary.json", "w") as file:
         json.dump(summary, file, indent=2)
@@ -172,6 +189,7 @@ def load_split(output_dir: Path = SPLIT_DIR) -> DataSplit:
         num_users=summary["num_users"],
         num_movies=summary["num_movies"],
         seed=summary["seed"],
+        dataset=summary.get("dataset", "unknown"),
     )
 
 

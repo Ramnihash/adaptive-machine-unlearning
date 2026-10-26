@@ -42,7 +42,13 @@ def read_run_info(checkpoint: Path | str) -> tuple[str | None, float | None]:
         run_id = json.loads((run_dir / "metadata.json").read_text())["run_id"]
         stages = json.loads((run_dir / "results.json").read_text())["stages"]
         stage = next(iter(stages.values()))
-        seconds = stage.get("retrain_seconds", stage.get("train_seconds"))
+        seconds = stage.get(
+            "retrain_seconds",
+            stage.get(
+                "train_seconds",
+                stage.get("runtime_seconds", stage.get("unlearning_seconds")),
+            ),
+        )
     except (OSError, KeyError, StopIteration, json.JSONDecodeError):
         pass
     return run_id, seconds
@@ -52,7 +58,7 @@ def evaluate_models(
     bundles: dict[str, ModelBundle],
     split: DataSplit,
     target_user: int,
-    reference: str = "theta_star",
+    reference: str | None = "theta_star",
     original: str = "theta_0",
     k: int = 10,
     mia_users: int = 2000,
@@ -83,8 +89,12 @@ def evaluate_models(
         rng = np.random.default_rng(seed)
         reference_users = rng.choice(np.setdiff1d(np.arange(split.num_users), [target_user]), 500, replace=False)
 
-    # θ*'s training data plus validation data: the same masking for every model.
-    seen = pd.concat([bundles[reference].train, split.val], ignore_index=True)
+    # Reference training data plus validation data: the same masking for every model.
+    if reference is not None and reference in bundles:
+        seen = pd.concat([bundles[reference].train, split.val], ignore_index=True)
+    else:
+        seen_train = split.train[split.train["user_idx"] != target_user]
+        seen = pd.concat([seen_train, split.val], ignore_index=True)
 
     results = {}
     for name, bundle in bundles.items():
@@ -100,7 +110,8 @@ def evaluate_models(
             ),
             "forgetting": forgotten_item_metrics(scores[name], target_user, forgotten_items, k=k),
             "consistency_vs_theta_star": (
-                None if name == reference
+                None
+                if (reference is None or reference not in bundles or name == reference)
                 else consistency_metrics(scores[name], scores[reference], seen, target_user, k=k)
             ),
             "privacy_mia_interaction": attack_forgotten_user(attack["classifier"], scores[name], split, target_user),

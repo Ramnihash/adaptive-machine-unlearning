@@ -26,12 +26,15 @@ class ProcessedData:
     num_movies: int
 
 
-def preprocess_movielens() -> ProcessedData:
-    """Load, validate, and remap MovieLens IDs to zero-based indices."""
+from pathlib import Path
 
-    ratings = load_ratings()
-    movies = load_movies()
-    users = load_users()
+
+def preprocess_movielens(data_dir: Path | str | None = None) -> ProcessedData:
+    """Load, validate, and remap MovieLens IDs to zero-based indices."""
+    kwargs = {"data_dir": Path(data_dir)} if data_dir is not None else {}
+    ratings = load_ratings(**kwargs)
+    movies = load_movies(**kwargs)
+    users = load_users(**kwargs)
 
     validate_ratings(ratings)
 

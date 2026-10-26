@@ -1,0 +1,12 @@
+{
+  "dataset": "movielens-1m",
+  "seed": 42,
+  "num_users": 6040,
+  "num_movies": 3706,
+  "train": 800309,
+  "val": 99950,
+  "test": 99950,
+  "fingerprint": "c61c9d4683ecce7f",
+  "val_ratio": 0.1,
+  "test_ratio": 0.1
+}

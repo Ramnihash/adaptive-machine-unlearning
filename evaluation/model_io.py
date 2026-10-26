@@ -41,6 +41,13 @@ def load_bundle(
     the graph is rebuilt from the same reduced training data.
     """
     state = torch.load(checkpoint, map_location="cpu")
+    expected_nodes = split.num_users + split.num_movies
+    checkpoint_nodes = state["embedding.weight"].shape[0]
+    if checkpoint_nodes != expected_nodes:
+        raise ValueError(
+            f"Checkpoint node count ({checkpoint_nodes}) does not match DataSplit total nodes "
+            f"({expected_nodes} = {split.num_users} users + {split.num_movies} movies) for {name!r}."
+        )
     embedding_dim = state["embedding.weight"].shape[1]
 
     model = LightGCN(
