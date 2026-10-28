@@ -92,6 +92,10 @@ def targeted_retraining_unlearning(
         select_best=False,
     )
 
+    # train_lightgcn trains on the GPU when one exists; hand back a model on the caller's device
+    # so downstream evaluation (built for the input model's device) does not mix devices.
+    retrained_model = retrained_model.to(next(model.parameters()).device)
+
     elapsed = time.perf_counter() - start_time
 
     metadata = {
