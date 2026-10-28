@@ -216,6 +216,9 @@ def evaluate_models_stage(config, run):
         if name in results["models"]:
             results["models"][name]["run_id"] = run_id
     results["shadow_run_id"] = run_ids.get("shadow")
+    results["checkpoint_paths"] = {
+        name: str(entry["path"]) for name, entry in checkpoints_cfg.items() if entry.get("path")
+    }
     return results
 
 

@@ -42,13 +42,15 @@ def read_run_info(checkpoint: Path | str) -> tuple[str | None, float | None]:
         run_id = json.loads((run_dir / "metadata.json").read_text())["run_id"]
         stages = json.loads((run_dir / "results.json").read_text())["stages"]
         stage = next(iter(stages.values()))
-        seconds = stage.get(
-            "retrain_seconds",
-            stage.get(
-                "train_seconds",
-                stage.get("runtime_seconds", stage.get("unlearning_seconds")),
-            ),
-        )
+        # Stage results report time under different keys; the unlearn stage nests it under "strategy".
+        candidates = [stage, stage.get("strategy") or {}]
+        for source in candidates:
+            for key in ("retrain_seconds", "train_seconds", "runtime_seconds", "unlearning_seconds"):
+                if source.get(key) is not None:
+                    seconds = source[key]
+                    break
+            if seconds is not None:
+                break
     except (OSError, KeyError, StopIteration, json.JSONDecodeError):
         pass
     return run_id, seconds
