@@ -17,16 +17,24 @@ def _stage(path: Path) -> dict:
     return data.get("stages", {}).get("evaluate", data)
 
 
-def routing_for(evaluation: dict) -> dict:
-    """Routing decision of the unlearn run behind the 'unlearned' checkpoint, or {}."""
+def routing_for(evaluation: dict, result_path: Path | None = None) -> dict:
+    """Routing decision of the unlearn run behind the 'unlearned' checkpoint, or {}.
+
+    If the original checkpoint path no longer exists (for example after a restart), a saved
+    run folder named unlearn_u<user> next to the evaluation folder is used instead.
+    """
+    candidates = []
     checkpoint = evaluation.get("checkpoint_paths", {}).get("unlearned")
-    if not checkpoint:
-        return {}
-    try:
-        results = json.loads((Path(checkpoint).parent.parent / "results.json").read_text())
-        return results["stages"]["unlearn"]["routing"]
-    except (OSError, KeyError, json.JSONDecodeError):
-        return {}
+    if checkpoint:
+        candidates.append(Path(checkpoint).parent.parent / "results.json")
+    if result_path is not None:
+        candidates.append(Path(result_path).parent.parent / f"unlearn_u{evaluation['target_user']}" / "results.json")
+    for candidate in candidates:
+        try:
+            return json.loads(candidate.read_text())["stages"]["unlearn"]["routing"]
+        except (OSError, KeyError, json.JSONDecodeError):
+            continue
+    return {}
 
 
 def summary_rows(result_paths: list[Path]) -> list[dict]:
@@ -34,7 +42,7 @@ def summary_rows(result_paths: list[Path]) -> list[dict]:
     for path in result_paths:
         evaluation = _stage(path)
         k = evaluation["k"]
-        routing = routing_for(evaluation)
+        routing = routing_for(evaluation, Path(path))
         for name, model in evaluation["models"].items():
             consistency = model.get("consistency_vs_theta_star") or {}
             membership = (model.get("privacy_mia_user") or {}).get("target_membership_probability")

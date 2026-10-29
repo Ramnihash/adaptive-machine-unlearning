@@ -40,3 +40,16 @@ def test_summary_marks_unlearned_row_with_routing(tmp_path):
     assert [r["model"] for r in rows] == ["theta_0", "unlearned"]
     assert rows[1]["strategy"] == "gradient_ascent" and rows[1]["tier"] == "low"
     assert "gradient_ascent" in to_markdown(rows)
+
+
+def test_routing_falls_back_to_saved_unlearn_folder(tmp_path):
+    saved = tmp_path / "unlearn_u7"
+    saved.mkdir()
+    (saved / "results.json").write_text(json.dumps({"stages": {"unlearn": {"routing": {"influence_tier": "high"}}}}))
+    eval_dir = tmp_path / "eval_u7"
+    eval_dir.mkdir()
+    results = eval_dir / "results.json"
+    results.write_text("{}")
+    from evaluation.summary import routing_for
+    evaluation = {"target_user": 7, "checkpoint_paths": {"unlearned": "/gone/checkpoints/theta_u.pt"}}
+    assert routing_for(evaluation, results)["influence_tier"] == "high"
