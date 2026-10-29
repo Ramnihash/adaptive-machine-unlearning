@@ -45,4 +45,5 @@ unlearning:
   strategies:
     low: gradient_ascent
     medium: localized_update
-    high: targeted_retraining
+    high: warm_start_retraining   # also: targeted_retraining (exact retrain), naive_finetune (baseline)
+  warm_start_retraining: {epochs: 10}

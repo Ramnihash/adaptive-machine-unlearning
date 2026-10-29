@@ -341,3 +341,19 @@ def test_privacy_status_graceful_handling(synthetic_experiment):
     assert privacy["status"] == "unsupported_or_insufficient_data"
     assert "no held-out" in privacy["note"].lower()
     assert privacy["mia_interaction"] is None
+
+
+@pytest.mark.parametrize("name", ["warm_start_retraining", "naive_finetune"])
+def test_pipeline_dispatches_warm_start_family(synthetic_experiment, name):
+    model, split, config = synthetic_experiment
+    config["unlearning"]["strategies"] = {"low": name, "medium": name, "high": name}
+    config["unlearning"][name] = {"epochs": 2, "learning_rate": 0.01, "batch_size": 16}
+
+    unlearned_model, result = run_adaptive_unlearning(
+        model=model, split=split, target_user=2, config=config
+    )
+
+    assert result["strategy"]["name"] == name
+    assert result["strategy"]["details"]["strategy"] == name
+    assert result["strategy"]["parameters"]["epochs"] == 2
+    assert unlearned_model is not model

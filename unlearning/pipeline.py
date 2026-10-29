@@ -22,6 +22,7 @@ from unlearning.router import RoutingDecision, route_unlearning
 from unlearning.strategies.gradient_ascent import gradient_ascent_unlearning
 from unlearning.strategies.localized_update import localized_update_unlearning
 from unlearning.strategies.targeted_retraining import targeted_retraining_unlearning
+from unlearning.strategies.warm_start import warm_start_retraining
 
 
 def run_adaptive_unlearning(
@@ -205,6 +206,34 @@ def run_adaptive_unlearning(
             eval_every=eval_every,
             patience=patience,
             k=k_eval,
+            seed=seed,
+        )
+
+    elif selected_strategy in ("warm_start_retraining", "naive_finetune"):
+        ws_cfg = unlearning_cfg.get(selected_strategy, {})
+        epochs = int(ws_cfg.get("epochs", 10))
+        lr = float(ws_cfg.get("learning_rate", model_cfg.get("learning_rate", 0.001)))
+        batch_size = int(ws_cfg.get("batch_size", model_cfg.get("batch_size", 4096)))
+        reg = float(ws_cfg.get("regularization", model_cfg.get("regularization", 1e-4)))
+        reset_emb = bool(ws_cfg.get("reset_target_embedding", selected_strategy == "warm_start_retraining"))
+
+        strategy_params = {
+            "epochs": epochs,
+            "learning_rate": lr,
+            "batch_size": batch_size,
+            "regularization": reg,
+            "reset_target_embedding": reset_emb,
+            "seed": seed,
+        }
+        unlearned_model, strategy_meta = warm_start_retraining(
+            model=model,
+            split=split,
+            target_user=target_user,
+            epochs=epochs,
+            learning_rate=lr,
+            batch_size=batch_size,
+            regularization=reg,
+            reset_target_embedding=reset_emb,
             seed=seed,
         )
 
